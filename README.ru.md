@@ -1,4 +1,4 @@
-# Joke-consumer
+# 🃏 Joke Kafka Consumer
 
 
 [![🇬🇧 English](https://img.shields.io/badge/🇬🇧_English-README-blue?style=for-the-badge&logo=markdown&logoColor=white)](./README.md)
@@ -6,8 +6,6 @@
 
 ---
 
-
-# 🃏 Joke Kafka Consumer
 
 Сервис-потребитель (Consumer) для асинхронного приёма шуток из Apache Kafka и их сохранения в PostgreSQL.
 
