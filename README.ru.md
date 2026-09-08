@@ -11,6 +11,10 @@ https://img.shields.io/badge/Spring%2520Boot-3.4.0-brightgreen
 https://img.shields.io/badge/Apache%2520Kafka-3.8.0-black
 
 
+<img src="https://img.shields.io/badge/Java-ED8B00?style=for-the-badge&logo=java&logoColor=white" /> <img src="https://img.shields.io/badge/Spring_Boot-6DB33F?style=for-the-badge&logo=spring-boot&logoColor=white" /> <img src="https://img.shields.io/badge/Apache_Kafka-231F20?style=for-the-badge&logo=apache-kafka&logoColor=white" /> <img src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white" /> <img src="https://img.shields.io/badge/MySQL-4479A1?style=for-the-badge&logo=mysql&logoColor=white" /> <img src="https://img.shields.io/badge/H2-004027?style=for-the-badge&logo=h2&logoColor=white" /> <img src="https://img.shields.io/badge/Maven-C71A36?style=for-the-badge&logo=apache-maven&logoColor=white" />
+
+
+
 Joke Consumer — это сервис-потребитель Apache Kafka, который читает сообщения с шутками из топика и сохраняет их в базу данных. Проект написан на Java с использованием Spring Boot и предназначен для использования в качестве микросервиса в системах обработки потоковых данных.
 
 
