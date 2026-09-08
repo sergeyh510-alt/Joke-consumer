@@ -9,7 +9,7 @@
 
 # 🃏 Joke Kafka Consumer
 
-Сервис-потребитель для асинхронного приёма шуток из Apache Kafka, их сохранения в PostgreSQL и предоставления через REST API с расширенной статистикой.
+Сервис-потребитель (Consumer) для асинхронного приёма шуток из Apache Kafka и их сохранения в PostgreSQL.
 
 ---
 
@@ -28,25 +28,23 @@
    - [Настройка приложения](#настройка-приложения)
    - [Сборка и запуск](#сборка-и-запуск)
 6. [Конфигурация](#конфигурация)
-   - [Kafka](#kafka)
+   - [Kafka Consumer](#kafka-consumer)
    - [База данных](#база-данных)
    - [Логирование](#логирование)
-7. [REST API](#rest-api)
-   - [Получить все шутки (с пагинацией)](#получить-все-шутки-с-пагинацией)
-   - [Получить последние 10 шуток](#получить-последние-10-шуток)
-   - [Статистика](#статистика)
+7. [REST API (для мониторинга)](#rest-api-для-мониторинга)
+   - [Получить все шутки](#получить-все-шутки)
+   - [Получить последние шутки](#получить-последние-шутки)
+   - [Статистика работы consumer](#статистика-работы-consumer)
    - [Поиск по ключевому слову](#поиск-по-ключевому-слову)
-   - [Очистка БД](#очистка-бд)
-   - [Тестовое сохранение](#тестовое-сохранение)
 8. [Особенности реализации](#особенности-реализации)
-   - [Обработка дубликатов](#обработка-дубликатов)
-   - [Ручное подтверждение offset](#ручное-подтверждение-offset)
+   - [Дедупликация сообщений](#дедупликация-сообщений)
+   - [Ручное подтверждение offset (Manual Ack)](#ручное-подтверждение-offset-manual-ack)
    - [Обработка ошибок](#обработка-ошибок)
    - [Транзакционность](#транзакционность)
+   - [Сохранение метаданных Kafka](#сохранение-метаданных-kafka)
 9. [Тестирование](#тестирование)
-   - [Модульные тесты](#модульные-тесты)
-   - [Интеграционные тесты](#интеграционные-тесты)
-   - [Ручное тестирование Kafka](#ручное-тестирование-kafka)
+   - [Интеграционное тестирование с Kafka](#интеграционное-тестирование-с-kafka)
+   - [Ручное тестирование](#ручное-тестирование)
 10. [Примеры работы](#примеры-работы)
 11. [Возможные проблемы и решения](#возможные-проблемы-и-решения)
 12. [Планы по развитию](#планы-по-развитию)
@@ -55,38 +53,37 @@
 ---
 
 ## 📖 
-### Описание проекта
+## Описание проекта
 
-**Joke Kafka Consumer** — это Spring Boot микросервис, который:
+**Joke Kafka Consumer** — это Spring Boot микросервис, который выполняет одну задачу:
 
 - **Подписывается** на топик Kafka `jokes-topic`.
-- **Получает** сообщения с шутками в формате JSON (структура: `id`, `type`, `setup`, `punchline`).
-- **Дедуплицирует** сообщения по полю `id` (пропускает уже сохранённые).
-- **Сохраняет** шутки в PostgreSQL с метаданными Kafka (partition, offset, timestamp).
-- **Предоставляет REST API** для доступа к сохранённым шуткам, поиска, статистики и управления.
+- **Получает** сообщения с шутками в формате JSON.
+- **Проверяет** наличие дубликатов по полю `id`.
+- **Сохраняет** уникальные сообщения в PostgreSQL.
+- **Сохраняет** метаданные Kafka (partition, offset, timestamp) для каждого сообщения.
+- **Предоставляет REST API** для мониторинга и просмотра сохранённых данных.
 
-Проект демонстрирует **production-ready** подход к асинхронной обработке сообщений с ручным управлением offset, обработкой ошибок и дедупликацией.
+Проект демонстрирует **production-ready** подход к разработке Kafka Consumer с ручным управлением offset, дедупликацией и обработкой ошибок.
 
 ---
 
 ## 🧱 
-### Архитектура и компоненты
+## Архитектура и компоненты
 
 ### Диаграмма компонентов
 
 ```mermaid
 graph TD
-    A[Kafka Producer] -->|отправляет JokeMessage| B[Kafka Topic: jokes-topic]
-    B -->|читает| C[JokeKafkaConsumerService]
+    A[Kafka Producer<br/>(внешняя система)] -->|отправляет JokeMessage| B[Kafka Topic<br/>jokes-topic]
+    B -->|читает| C[JokeKafkaConsumerService<br/>@KafkaListener]
     C -->|десериализует| D[JsonDeserializer]
-    C -->|проверяет дубликат| E[JokeRepository.existsByJokeId]
+    C -->|проверка дубликата| E[JokeRepository.existsByJokeId]
     C -->|сохраняет| F[JokeRepository.save]
     F -->|JPA| G[(PostgreSQL)]
     
     H[REST Client] -->|GET /api/jokes| I[JokeController]
     H -->|GET /api/jokes/stats| I
-    H -->|GET /api/jokes/search| I
-    H -->|DELETE /api/jokes/clear| I
     
     I -->|запросы| E
     I -->|запросы| F
@@ -95,121 +92,72 @@ graph TD
     style I fill:#2196F3,color:#fff
 ```
 ### Диаграмма последовательности (обработка сообщения)
-```mermaid
-sequenceDiagram
-    participant P as Producer
-    participant K as Kafka Broker
-    participant C as ConsumerService
-    participant R as JokeRepository
-    participant DB as PostgreSQL
 
-    P->>K: Отправляет JokeMessage
-    K->>C: Доставляет сообщение (offset)
-    C->>C: Десериализация JSON
-    C->>R: existsByJokeId(jokeId)
-    R->>DB: SELECT COUNT(*)
-    
-    alt Дубликат
-        DB-->>R: true
-        R-->>C: дубликат найден
-        C->>C: totalDuplicates++
-        C->>K: acknowledgment.acknowledge()
-    else Новое сообщение
-        DB-->>R: false
-        R-->>C: дубликат не найден
-        C->>C: Преобразование в JokeEntity
-        C->>R: save(entity)
-        R->>DB: INSERT
-        DB-->>R: OK (generated id)
-        R-->>C: сохранённая сущность
-        C->>C: totalProcessed++
-        C->>K: acknowledgment.acknowledge()
-    end
-```
-### ER-диаграмма
-```mermaid
-erDiagram
-    JOKE {
-        bigint id PK "автоинкремент"
-        int joke_id UK "оригинальный ID шутки"
-        varchar type "тип шутки"
-        varchar setup "начало шутки"
-        varchar punchline "концовка шутки"
-        timestamp created_at "время сохранения"
-        bigint kafka_offset "offset из Kafka"
-        int kafka_partition "partition из Kafka"
-        timestamp kafka_timestamp "время отправки"
-    }
+<img width="4240" height="4666" alt="deepseek_mermaid_20260908_4af382" src="https://github.com/user-attachments/assets/4fd937c4-511e-4050-8953-08e89236f966" />
 
-```
-### 🔧 
-### Технологический стек
+### ER-диаграмма (таблица jokes)
+<img width="1941" height="1463" alt="deepseek_mermaid_20260908_ef5386" src="https://github.com/user-attachments/assets/c0e5b4fd-1cac-48ae-ac72-b5cc4db00794" />
 
-|Компонент|	Технология|
-|---------------|----------------------|
+## 🔧 
+## Технологический стек
+
+|Компонент	|Технология|
+|--------------|--------------------|
 |Фреймворк|	Spring Boot 3.2.x|
-|Обмен сообщениями|	Apache Kafka (Spring Kafka)|
-|База данных|	PostgreSQL 15+ (или H2 для тестов)|
+|Обмен сообщениями	|Apache Kafka (Spring Kafka)|
+|База данных|	PostgreSQL 15+|
 |ORM	|Spring Data JPA (Hibernate 6)|
-|Сборка	|Maven|
-|Язык|	Java 17+|
-|Десериализация|	Jackson (JsonDeserializer)|
-|Ломбок	|Project Lombok|
-|Тестирование|	JUnit 5, Mockito, Testcontainers|
-|Мониторинг	|Spring Boot Actuator|
-|Логирование|	SLF4J + Logback|
+|Сборка|Maven|
+|Язык	|Java 17+|
+|Десериализация	|Jackson (JsonDeserializer)|
+|Ломбок|	Project Lombok|
+|Мониторинг|	Spring Boot Actuator|
+|Логирование	|SLF4J + Logback|
 
 ## 📂 
 ## Структура проекта
 ```bach
 joke-kafka-consumer/
 ├── src/
-│   ├── main/
-│   │   ├── java/
-│   │   │   └── com/example/jokekafkaconsumer/
-│   │   │       ├── JokeKafkaConsumerApplication.java  # Точка входа
-│   │   │       ├── config/
-│   │   │       │   └── KafkaConsumerConfig.java       # Настройка Kafka
-│   │   │       ├── controller/
-│   │   │       │   └── JokeController.java            # REST API
-│   │   │       ├── dto/
-│   │   │       │   └── JokeMessage.java               # DTO для Kafka
-│   │   │       ├── model/
-│   │   │       │   └── JokeEntity.java                # JPA-сущность
-│   │   │       ├── repository/
-│   │   │       │   └── JokeRepository.java            # JPA-репозиторий
-│   │   │       └── service/
-│   │   │           └── JokeKafkaConsumerService.java  # Kafka-потребитель
-│   │   └── resources/
-│   │       ├── application.properties                 # Основные настройки
-│   │       ├── static/
-│   │       └── templates/
-│   └── test/                                          # Тесты (опционально)
-├── .gitattributes
-├── .gitignore
-├── HELP.md
-├── LICENSE
-├── mvnw
-├── mvnw.cmd
-└── pom.xml
+│   └── main/
+│       ├── java/
+│       │   └── com/example/jokekafkaconsumer/
+│       │       ├── JokeKafkaConsumerApplication.java  # Точка входа с @EnableKafka
+│       │       ├── config/
+│       │       │   └── KafkaConsumerConfig.java       # Конфигурация Kafka Consumer
+│       │       ├── controller/
+│       │       │   └── JokeController.java            # REST API для мониторинга
+│       │       ├── dto/
+│       │       │   └── JokeMessage.java               # DTO для десериализации из Kafka
+│       │       ├── model/
+│       │       │   └── JokeEntity.java                # JPA-сущность
+│       │       ├── repository/
+│       │       │   └── JokeRepository.java            # JPA-репозиторий
+│       │       └── service/
+│       │           └── JokeKafkaConsumerService.java  # Основной Kafka Consumer
+│       └── resources/
+│           └── application.properties                 # Конфигурация приложения
+├── pom.xml
+└── docker-compose.yml (опционально)
 ```
+
 ## 🚀 
 ## Установка и запуск
-
 ### Предварительные требования
 
-   * JDK 17 или новее (скачать)
+    * JDK 17 или новее
 
-   * Apache Kafka (локально или через Docker)
+    * Apache Kafka (локально или через Docker)
 
-   * PostgreSQL 15+ (локально или через Docker)
+    * PostgreSQL 15+ (локально или через Docker)
 
-   * Maven (или использовать встроенный mvnw)
+    * Maven (или использовать встроенный mvnw)
 
-   * Docker и Docker Compose (рекомендуется для быстрого старта)
+    * Docker и Docker Compose (рекомендуется)
 
-### Настройка окружения (Docker Compose)
-#### Создайте файл docker-compose.yml в корне проекта:
+ ### Настройка окружения (Docker Compose)
+
+#### Создайте docker-compose.yml в корне проекта:   
 ```bach
 version: '3.8'
 
@@ -253,7 +201,7 @@ services:
 volumes:
   postgres_data:
 ```
-### Запустите все сервисы:
+#### Запустите инфраструктуру:
 ```bach
 docker-compose up -d
 ```
@@ -261,23 +209,24 @@ docker-compose up -d
 ```bach
 docker ps
 ```
-### Настройка приложения
+#### Настройка приложения
+
 #### Файл src/main/resources/application.properties:
 ```bach
 #properties
 # ===== Сервер =====
 server.port=8081
 
-# ===== KAFKA =====
+# ===== KAFKA CONSUMER =====
 spring.kafka.bootstrap-servers=localhost:9092
 spring.kafka.consumer.group-id=joke-consumer-group
 spring.kafka.consumer.auto-offset-reset=earliest
-spring.kafka.consumer.enable-auto-commit=false
+spring.kafka.consumer.enable-auto-commit=false          # Ручной ack
 spring.kafka.consumer.key-deserializer=org.apache.kafka.common.serialization.StringDeserializer
 spring.kafka.consumer.value-deserializer=org.springframework.kafka.support.serializer.JsonDeserializer
 spring.kafka.consumer.properties.spring.json.trusted.packages=*
 spring.kafka.consumer.properties.spring.json.value.default.type=com.example.jokekafkaconsumer.dto.JokeMessage
-spring.kafka.listener.ack-mode=manual
+spring.kafka.listener.ack-mode=manual                   # Ручное подтверждение
 spring.kafka.listener.concurrency=1
 spring.kafka.listener.poll-timeout=3000
 
@@ -302,52 +251,304 @@ logging.level.org.hibernate.orm.jdbc.bind=TRACE
 
 # ===== ACTUATOR =====
 management.endpoints.web.exposure.include=health,info,metrics
+
 ```
 ### Сборка и запуск
-
 ```bach
-# Клонируйте репозиторий
-git clone https://github.com/your-username/joke-kafka-consumer.git
-cd joke-kafka-consumer
-
 # Сборка проекта
 ./mvnw clean package
 
 # Запуск приложения
 ./mvnw spring-boot:run
 ```
-#### Приложение будет доступно по адресу: http://localhost:8081
+* Приложение будет доступно по адресу: http://localhost:8081
 
 ## ⚙️ 
 ## Конфигурация
+### Kafka Consumer
 |Свойство	|Значение	|Описание|
-|--------------------|-----------------|------------------------|
+|-----------------|---------------|---------------------|
 |spring.kafka.bootstrap-servers|	localhost:9092|	Адрес брокера Kafka|
-|spring.kafka.consumer.group-id	|joke-consumer-group	|ID группы потребителей|
-|spring.kafka.consumer.auto-offset-reset	|earliest|	Читать с самого начала|
-|spring.kafka.consumer.enable-auto-commit|	false|	Важно! Ручное управление offset|
-|spring.kafka.listener.ack-mode	|manual	|Подтверждение вручную|
-|spring.kafka.listener.concurrency|1	|Количество потоков-слушателей|
+|spring.kafka.consumer.group-id	|joke-consumer-group|	ID группы потребителей\
+|spring.kafka.consumer.auto-offset-reset|	earliest	|Начинать чтение с самого начала|
+|spring.kafka.consumer.enable-auto-commit	|false|	Важно! Отключаем авто-коммит|
+|spring.kafka.listener.ack-mode	manual	|Ручное| подтверждение offset|
+|spring.kafka.listener.concurrency	|1	|Количество потоков-слушателей|
 
-## База данных
 
-|Свойство	|Значение	|Описание|
-|-------------------|--------------|--------------------|
-spring.datasource.url|	jdbc:postgresql://localhost:5432/jokes_db|	JDBC URL|
-spring.datasource.username	|postgres	|Имя пользователя|
-spring.datasource.password|	12345	|Пароль|
-spring.jpa.hibernate.ddl-auto	|update	|Автосоздание/обновление схемы|
+### База данных
 
-## Логирование
-|Логгер	|Уровень|	Описание|
-|-------------------|---------------|---------------|
-|com.example.jokekafkaconsumer	|DEBUG	|Логи приложения|
-|org.springframework.kafka|	INFO	|Логи Kafka|
-|org.hibernate.SQL|	DEBUG	|SQL-запросы|
-|org.hibernate.orm.jdbc.bind|	TRACE	|Параметры запросов|
+|Свойство|	Значение|	Описание|
+|---------------------|----------------------------|
+spring.datasource.url|	jdbc:postgresql://localhost:5432/jokes_db|	URL подключения|
+spring.datasource.username	|postgres|	Имя пользователя|
+spring.datasource.password	|12345|	Пароль|
+spring.jpa.hibernate.ddl-auto|	update|	Автосоздание/обновление схемы|
+
+### Логирование
+|Логгер	|Уровень	|Описание|
+|--------------------------|---------------------------------|
+|com.example.jokekafkaconsumer	|DEBUG|	Логи приложения (получение, сохранение)|
+|org.springframework.kafka	INFO|Логи| Kafka (подключение, получение)|
+|org.hibernate.SQL	|DEBUG|	Вывод SQL-запросов|
+|org.hibernate.orm.jdbc.bind|	TRACE|	Параметры запросов|
 
 ## 🌐 
-## REST API
+## REST API (для мониторинга)
+### REST API предоставляет доступ к сохранённым данным и статистике работы consumer.
+
+#### Получить все шутки (с пагинацией)
+```bach
+GET /api/jokes?page=0&size=20
+```
+#### Параметры:
+* page - номер страницы (по умолчанию 0)
+
+* size - размер страницы (по умолчанию 20)
+
+#### Пример ответа:
+```bach
+{
+  "content": [
+    {
+      "id": 1,
+      "jokeId": 42,
+      "type": "programming",
+      "setup": "Why do programmers prefer dark mode?",
+      "punchline": "Because light attracts bugs.",
+      "createdAt": "2026-09-08T10:00:00",
+      "kafkaOffset": 15,
+      "kafkaPartition": 0,
+      "kafkaTimestamp": "2026-09-08T10:00:00"
+    }
+  ],
+  "pageable": {
+    "pageNumber": 0,
+    "pageSize": 20
+  },
+  "totalElements": 100,
+  "totalPages": 5
+}
+```
+#### Получить последние 10 шуток
+```bach
+GET /api/jokes/latest
+```
+#### Пример ответа:
+```bach
+{
+  "totalInDB": 157,
+  "byType": {
+    "programming": 89,
+    "general": 45,
+    "knock-knock": 23
+  },
+  "consumer": {
+    "processed": 157,
+    "duplicates": 12,
+    "errors": 3,
+    "lastOffset": 171
+  }
+}
+```
+#### Что означают поля:
+* processed - количество успешно обработанных и сохранённых сообщений
+
+* duplicates - количество пропущенных дубликатов
+
+* errors - количество ошибок при обработке
+
+* lastOffset - последний обработанный offset
+
+
+#### Поиск по ключевому слову
+
+```bach
+GET /api/jokes/search?keyword=programmer
+```
+##🔍 
+##Особенности реализации
+### Дедупликация сообщений
+```bach
+// Проверка перед сохранением
+if (jokeRepository.existsByJokeId(joke.getId())) {
+    log.warn("⚠️ Дубликат ID {} – пропускаем", joke.getId());
+    totalDuplicates.incrementAndGet();
+    acknowledgment.acknowledge();
+    return;
+}
+```
+* Уникальность гарантируется на уровне БД через @UniqueConstraint(columnNames = {"joke_id"})
+
+* Дубликаты логируются, но не сохраняются
+
+* Offset подтверждается, чтобы не блокировать очередь
+
+### Ручное подтверждение offset (Manual Ack)
+```bach
+@KafkaListener(topics = "jokes-topic")
+public void consumeJoke(..., Acknowledgment acknowledgment) {
+    try {
+        // ... обработка
+        acknowledgment.acknowledge(); // Явное подтверждение
+    } catch (Exception e) {
+        // Ошибка логируется, но offset подтверждается
+        acknowledgment.acknowledge();
+    }
+}
+```
+#### Преимущества:
+
+    * Полный контроль над подтверждением
+
+    * Предотвращение потери сообщений при ошибках
+
+    * Возможность повторной обработки
+
+
+### Обработка ошибок 
+ ```bach
+@Bean
+public ConcurrentKafkaListenerContainerFactory<...> kafkaListenerContainerFactory() {
+    factory.setCommonErrorHandler(
+        new DefaultErrorHandler(new FixedBackOff(1000L, 3L))
+    );
+    return factory;
+}
+```
+* Настроен DefaultErrorHandler с 3 попытками повторной обработки
+
+* Интервал между попытками - 1 секунда
+
+* При ошибке offset подтверждается (чтобы не блокировать очередь)
+
+* Все ошибки логируются с полным стек-трейсом
+
+* Счётчик ошибок доступен через /api/jokes/stats
+
+### Транзакционность
+```bach
+@KafkaListener(...)
+@Transactional // Гарантирует атомарность
+public void consumeJoke(...) {
+    jokeRepository.save(entity);
+}
+```
+* Использование @Transactional обеспечивает атомарность операций с БД
+
+* При ошибке транзакция откатывается
+
+* Сообщение не теряется (offset не подтверждён)
+
+### Сохранение метаданных Kafka
+```bach
+entity.setKafkaPartition(partition);
+entity.setKafkaOffset(offset);
+entity.setKafkaTimestamp(
+    LocalDateTime.ofInstant(Instant.ofEpochMilli(timestamp), ZoneId.systemDefault())
+);
+```
+### Каждое сохранённое сообщение содержит:
+
+    * kafka_partition - номер партиции
+
+    * kafka_offset - offset сообщения
+
+    * kafka_timestamp - временная метка из Kafka
+
+### Это позволяет:
+
+    * Отслеживать происхождение данных
+
+    * Анализировать задержки
+
+    * Восстанавливать данные при необходимости
+
+## 🧪 
+## Тестирование
+#### Интеграционное тестирование с Kafka
+
+#### Для тестирования можно использовать Embedded Kafka или Testcontainers:  
+```bach
+<!-- В pom.xml -->
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka-test</artifactId>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.testcontainers</groupId>
+    <artifactId>kafka</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+### Ручное тестирование
+
+#### 1. Проверьте, что топик существует:
+```bach
+docker exec -it kafka kafka-topics \
+  --list \
+  --bootstrap-server localhost:9092
+```
+#### Если топика нет, создайте:
+```bach
+docker exec -it kafka kafka-topics \
+  --create \
+  --topic jokes-topic \
+  --bootstrap-server localhost:9092 \
+  --partitions 1 \
+  --replication-factor 1
+```
+#### 2. Отправьте тестовые сообщения через консольного продюсера:
+```bach
+docker exec -it kafka kafka-console-producer \
+  --broker-list localhost:9092 \
+  --topic jokes-topic
+```
+### Отправьте сообщения (по одному на строку):
+```bach
+#json
+{"id": 1, "type": "programming", "setup": "Why do Java developers wear glasses?", "punchline": "Because they can't C#!"}
+{"id": 2, "type": "general", "setup": "Why did the programmer go broke?", "punchline": "Because he used up all his cache."}
+{"id": 1, "type": "programming", "setup": "Duplicate message", "punchline": "Should be skipped"}
+```
+### 3. Проверьте, что сообщения сохранились:
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
