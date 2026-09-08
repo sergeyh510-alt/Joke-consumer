@@ -196,9 +196,9 @@ joke.topic.name (добавьте сами)|	Имя топика для чтен
 
 ### 📞 
 ### Контакты
-* Contact Sergey Chekryzhov
-* Email sergeyh510@gmail.com
-* GitHub sergeyh510-alt
-* Project Joke Kafka Consumer
+* Contact: Sergey Chekryzhov
+* Email: sergeyh510@gmail.com
+* GitHub: sergeyh510-alt
+* Project: Joke Kafka Consumer
 * LinkedIn: www.linkedin.com/in/sergey-chekryzhov-a38778217
 * Telegram: @SergeyChekryzhov
